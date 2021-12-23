@@ -11,9 +11,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/time.h>
-
-// ICMP header len for echo req
-#define ICMP_HDRLEN 8
+#include <signal.h>
 
 // Checksum algo
 unsigned short calculate_checksum(unsigned short * paddress, int len);
@@ -24,12 +22,18 @@ unsigned short calculate_checksum(unsigned short * paddress, int len);
 //  computer (IP-spoofing), i.e. just another IP from your subnet, and the ICMP
 //  still be sent, but do not expect to see ICMP_ECHO_REPLY in most such cases
 //  since anti-spoofing is wide-spread.
+#define TRUE 1
+#define FALSE 0
+// ICMP header len for echo req
+#define ICMP_HDRLEN 8
 
 #define SOURCE_IP "10.0.2.15"
 // i.e the gateway or ping to google.com for their ip-address
 #define DESTINATION_IP "1.1.1.1"
 
 #define ICMP_ECHO_ID 20
+
+int RUN = TRUE;
 
 // clock setter
 struct timeval start, end;
@@ -59,30 +63,28 @@ void display(void *buff, int len, int *recvIndex){
 //--------------------------------------------------------------------/
 //--- listener - separate process to listen for and collect messages--/
 //--------------------------------------------------------------------/
-void listener(int *recvIndex, int *responseSock){
+void listener(int *sendIndex,int *recvIndex, int *responseSock){
         if (*responseSock < 0) {
-                printf("Response socket ERROR");
-                exit(0);
+            printf("Response socket ERROR");
+            exit(0);
         }
-        struct sockaddr_in input_addr;
+
         unsigned char buff[1024];
-        int len = sizeof(input_addr);
         int bytes;
-        while(1) {
-                bzero(buff, sizeof(buff));
-                bytes = recvfrom(*responseSock, buff, sizeof(buff), 0, (struct sockaddr*)&input_addr, &len);
-                if ( bytes > 0 ) {
-                        display(buff, bytes, recvIndex);
-                        break;
-                }
-                else if(bytes == 0) {
-                        printf("ERROR The listener connection closed");
-                        exit(1);
-                }
-                else if (bytes < 0) {
-                        printf("ERROR faild to receive\n");
-                        exit(1);
-                }
+
+        bzero(buff, sizeof(buff));
+        bytes = recvfrom(*responseSock, buff, sizeof(buff), 0, (struct sockaddr*)NULL, NULL);
+        if ( bytes > 0 ) {
+                display(buff, bytes, recvIndex);
+                return;
+        }
+        else if(bytes == 0) {
+                printf("ERROR The listener connection closed");
+                exit(1);
+        }
+        else if (bytes < 0) {
+                printf("time out for echo number %d\n", *sendIndex);
+                (*sendIndex) += 1;
         }
 }
 
@@ -137,7 +139,15 @@ void ping(struct sockaddr_in *dest_addr, int *sock, int *sendIndex){
 
 }
 
+void sigintHandler(int sig_num){
+    /* Reset handler to catch SIGINT next time.
+       Refer http://en.cppreference.com/w/c/program/signal */
+    printf("\n");
+    RUN = FALSE;
+}
+
 int main(){
+        signal(SIGINT, sigintHandler);
         // Create raw socket for IP-RAW (make ICMP-header by yourself)
         int sock = -1;
         if ((sock = socket (AF_INET, SOCK_RAW, IPPROTO_ICMP)) == -1) {
@@ -145,6 +155,13 @@ int main(){
                 printf ("To create a raw socket, the process needs to be run by Admin/root user.\n\n");
                 return -1;
         }
+
+
+        start.tv_sec = 0;
+        start.tv_usec = 100000;
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,&start,sizeof(start)) < 0)
+            printf("Set time out Error");
+
 
         // init the dest address
         struct sockaddr_in dest_addr;
@@ -158,15 +175,16 @@ int main(){
         int sendIndex = 0;
         int recvIndex = 0;
 
-        while(sendIndex < 3) {
-                ping(&dest_addr, &sock, &sendIndex);
-                if(sendIndex > 0)
-                        listener(&recvIndex, &sock);
+        while(RUN) {
+          sleep(1);
+          ping(&dest_addr, &sock, &sendIndex);
+          if(sendIndex > 0)
+                  listener(&sendIndex, &recvIndex, &sock);
         }
         // Close the raw socket descriptor.
         close(sock);
         int pocketloss = 100 - (int)((float)recvIndex/(float)sendIndex *100);
-
+        printf("\n-----------------PING statistic----------------\n");
         printf("%d packets transmitted, %d received, %d%% packet loss\n",sendIndex, recvIndex, pocketloss);
 
         return 0;
