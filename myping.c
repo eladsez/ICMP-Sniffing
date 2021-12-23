@@ -32,8 +32,7 @@ unsigned short calculate_checksum(unsigned short * paddress, int len);
 #define DESTINATION_IP "1.1.1.1"
 
 #define ICMP_ECHO_ID 20
-
-int RUN = TRUE;
+volatile int RUN = TRUE;
 
 // clock setter
 struct timeval start, end;
@@ -49,6 +48,7 @@ float stopClock(){
 }
 
 void display(void *buff, int len, int *recvIndex){
+        if(!RUN)return;
         struct iphdr *ip = buff;
         struct icmphdr *icmp = buff+ip->ihl*4;
 
