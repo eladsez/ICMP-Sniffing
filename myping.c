@@ -29,33 +29,40 @@ unsigned short calculate_checksum(unsigned short * paddress, int len);
 
 #define SOURCE_IP "10.0.2.15"
 // i.e the gateway or ping to google.com for their ip-address
-#define DESTINATION_IP "1.1.1.1"
+#define DESTINATION_IP "10.0.0.138"
 
 #define ICMP_ECHO_ID 20
 volatile int RUN = TRUE;
 
 // clock setter
 struct timeval start, end;
+float RTT;
+
+//pocketloss setter
+int recvIndex = 0;
+int sendIndex = 0;
 
 void startClock(){
         gettimeofday(&start, NULL);
 }
 
-float stopClock(){
+void stopClock(){
         gettimeofday(&end, NULL);
-        float time = (float)(end.tv_usec - start.tv_usec)/1000;
-        return time;
+        RTT = (float)(end.tv_usec - start.tv_usec)/1000;
 }
 
-void display(void *buff, int len, int *recvIndex){
-        if(!RUN)return;
+void display(void *buff, int len){
+        if(!RUN){
+          sendIndex -= 1;
+          return;
+        }
         struct iphdr *ip = buff;
         struct icmphdr *icmp = buff+ip->ihl*4;
 
         if ( icmp->un.echo.id == ICMP_ECHO_ID ) {
-                *(recvIndex) += 1;
+                recvIndex += 1;
                 printf("echo response from %s", inet_ntoa(*((struct in_addr *)&(ip->saddr))));
-                printf(" icmp_seq=%d RTT=%.3lf ms \n", icmp->un.echo.sequence, stopClock());
+                printf(" icmp_seq=%d RTT=%.3lf ms \n", icmp->un.echo.sequence, RTT);
         }
 
 }
@@ -63,19 +70,14 @@ void display(void *buff, int len, int *recvIndex){
 //--------------------------------------------------------------------/
 //--- listener - separate process to listen for and collect messages--/
 //--------------------------------------------------------------------/
-void listener(int *sendIndex,int *recvIndex, int *responseSock){
-        if (*responseSock < 0) {
-            printf("Response socket ERROR");
-            exit(0);
-        }
-
+void listener(int *responseSock){
         unsigned char buff[1024];
         int bytes;
-
         bzero(buff, sizeof(buff));
         bytes = recvfrom(*responseSock, buff, sizeof(buff), 0, (struct sockaddr*)NULL, NULL);
+        stopClock();
         if ( bytes > 0 ) {
-                display(buff, bytes, recvIndex);
+                display(buff, bytes);
                 return;
         }
         else if(bytes == 0) {
@@ -83,12 +85,11 @@ void listener(int *sendIndex,int *recvIndex, int *responseSock){
                 exit(1);
         }
         else if (bytes < 0) {
-                printf("time out for echo number %d\n", *sendIndex);
-                (*sendIndex) += 1;
+                printf("time out for echo number %d\n", sendIndex);
         }
 }
 
-void ping(struct sockaddr_in *dest_addr, int *sock, int *sendIndex){
+void ping(struct sockaddr_in *dest_addr, int *sock){
         struct icmp icmphdr; // ICMP-header
         char data[IP_MAXPACKET] = "This is the ping.\n";
 
@@ -111,7 +112,7 @@ void ping(struct sockaddr_in *dest_addr, int *sock, int *sendIndex){
 
         // Sequence Number (16 bits): starts at 0
         // because we're not payloading from another request.
-        icmphdr.icmp_seq = *sendIndex;
+        icmphdr.icmp_seq = sendIndex;
 
         // ICMP header checksum (16 bits): set to 0 not to include into checksum calculation
         icmphdr.icmp_cksum = 0;
@@ -134,9 +135,8 @@ void ping(struct sockaddr_in *dest_addr, int *sock, int *sendIndex){
                 printf ("sendto() failed with error: %d", errno);
         else {
                 startClock();
-                (*sendIndex) += 1;
+                sendIndex += 1;
         }
-
 }
 
 void sigintHandler(int sig_num){
@@ -156,10 +156,10 @@ int main(){
                 return -1;
         }
 
-
-        start.tv_sec = 0;
-        start.tv_usec = 100000;
-        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,&start,sizeof(start)) < 0)
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000;
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,&timeout,sizeof(timeout)) < 0)
             printf("Set time out Error");
 
 
@@ -172,14 +172,12 @@ int main(){
         // dest_in.sin_addr.s_addr = DESTINATION_IP;
 
         printf("PING %s\n", DESTINATION_IP);
-        int sendIndex = 0;
-        int recvIndex = 0;
 
         while(RUN) {
           sleep(1);
-          ping(&dest_addr, &sock, &sendIndex);
-          if(sendIndex > 0)
-                  listener(&sendIndex, &recvIndex, &sock);
+          ping(&dest_addr, &sock);
+          // if(sendIndex > 0)
+                  listener(&sock);
         }
         // Close the raw socket descriptor.
         close(sock);
